@@ -59,6 +59,38 @@
 # define clztl  clz32
 #endif
 
+//////////////////////////Shadow Stack Stuff-Niko//////////////////////////////////////
+typedef struct {
+    target_ulong stk[1024];
+    target_ulong top;
+} SHADOW_t ;
+
+SHADOW_t shdw = { {0}, -1};
+uint8_t shadow_pop_flag = 0;
+void shadow_push(target_ulong value);
+target_ulong shadow_pop(void);
+
+void shadow_push(target_ulong value) {
+    if (shdw.top == 1023){
+        return;
+    }
+    shdw.top = shdw.top + 1;
+    shdw.stk[shdw.top] = value;
+}
+
+target_ulong shadow_pop(void) {
+    if (shdw.top == -1){
+        return 0;
+    }
+	target_ulong tmp;
+    tmp = shdw.stk[shdw.top];
+    shdw.stk[shdw.top] = 0;
+    shdw.top = shdw.top - 1;
+    return tmp;
+}
+
+//////////////////////////////////////////////////////////////////////////////////
+
 //#define MACRO_TEST   1
 
 /* global register indexes */
@@ -3848,10 +3880,8 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
                     break;
 #ifdef TARGET_X86_64
                 case MO_64:
-                    tcg_gen_mulu2_i64(cpu_T[0], cpu_T[1],
+                    tcg_gen_mulu2_i64(cpu_regs[s->vex_v], cpu_regs[reg],
                                       cpu_T[0], cpu_regs[R_EDX]);
-                    tcg_gen_mov_i64(cpu_regs[s->vex_v], cpu_T[0]);
-                    tcg_gen_mov_i64(cpu_regs[reg], cpu_T[1]);
                     break;
 #endif
                 }
@@ -4414,7 +4444,6 @@ static target_ulong disas_insn(CPUX86State *env, DisasContext *s,
     int modrm, reg, rm, mod, op, opreg, val;
     target_ulong next_eip, tval;
     int rex_w, rex_r;
-
     s->pc = pc_start;
     prefixes = 0;
     s->override = -1;
@@ -4912,7 +4941,7 @@ static target_ulong disas_insn(CPUX86State *env, DisasContext *s,
             gen_op_mov_v_reg(ot, cpu_T[0], rm);
         }
 
-        switch(op) {
+        switch(op) { 
         case 0: /* inc Ev */
             if (mod != 3)
                 opreg = OR_TMP0;
@@ -4933,6 +4962,9 @@ static target_ulong disas_insn(CPUX86State *env, DisasContext *s,
                 tcg_gen_ext16u_tl(cpu_T[0], cpu_T[0]);
             }
             next_eip = s->pc - s->cs_base;
+			////Push-Niko////
+			shadow_push(next_eip);
+			/////////////////////////
             tcg_gen_movi_tl(cpu_T[1], next_eip);
             gen_push_v(s, cpu_T[1]);
             gen_op_jmp_v(cpu_T[0]);
@@ -4942,6 +4974,7 @@ static target_ulong disas_insn(CPUX86State *env, DisasContext *s,
             gen_op_ld_v(s, ot, cpu_T[1], cpu_A0);
             gen_add_A0_im(s, 1 << ot);
             gen_op_ld_v(s, MO_16, cpu_T[0], cpu_A0);
+
         do_lcall:
             if (s->pe && !s->vm86) {
                 tcg_gen_trunc_tl_i32(cpu_tmp2_i32, cpu_T[0]);
@@ -6363,6 +6396,12 @@ static target_ulong disas_insn(CPUX86State *env, DisasContext *s,
         gen_eob(s);
         break;
     case 0xc3: /* ret */
+		
+		///////Raise flag if in a certain range-Niko/////
+		if( (s->pc >= 0x8048df0 && s->pc <= 0x8048ede) ){
+			shadow_pop_flag = 1;
+		}
+		
         ot = gen_pop_T0(s);
         gen_pop_update(s, ot);
         /* Note that gen_pop_T0 uses a zero-extending load.  */
@@ -6431,6 +6470,10 @@ static target_ulong disas_insn(CPUX86State *env, DisasContext *s,
             } else if (!CODE64(s)) {
                 tval &= 0xffffffff;
             }
+			
+			/////////Push-Niko///////////////
+			shadow_push(next_eip);			
+			/////////////////////////
             tcg_gen_movi_tl(cpu_T[0], next_eip);
             gen_push_v(s, cpu_T[0]);
             gen_jmp(s, tval);
@@ -7077,6 +7120,7 @@ static target_ulong disas_insn(CPUX86State *env, DisasContext *s,
 #ifdef TARGET_X86_64
     case 0x105: /* syscall */
         /* XXX: is it usable in real mode ? */
+
         gen_update_cc_op(s);
         gen_jmp_im(pc_start - s->cs_base);
         gen_helper_syscall(cpu_env, tcg_const_i32(s->pc - pc_start));
@@ -7979,9 +8023,31 @@ void gen_intermediate_code(CPUX86State *env, TranslationBlock *tb)
 
     gen_tb_start(tb);
     for(;;) {
+
+		
+		///////Something something "oh no im being hacked?"/////
+		if(shadow_pop_flag){
+			uint8_t danger_flag = 1;
+			int i;
+			for(i = 0; i <= shdw.top; i++){
+				if(shdw.stk[i] == pc_ptr){
+					shadow_pop();
+					danger_flag = 0;
+				}
+			}
+			if(danger_flag){
+				printf("Something, something Oh no im being hacked!\n");
+				exit(0);
+			}
+			shadow_pop_flag = 0;
+		}
+		///////////////////////////////////////////////////////
+		
+		
+		
         tcg_gen_insn_start(pc_ptr, dc->cc_op);
         num_insns++;
-
+		
         /* If RF is set, suppress an internally generated breakpoint.  */
         if (unlikely(cpu_breakpoint_test(cs, pc_ptr,
                                          tb->flags & HF_RF_MASK
@@ -8041,6 +8107,8 @@ void gen_intermediate_code(CPUX86State *env, TranslationBlock *tb)
             break;
         }
     }
+	
+	
     if (tb->cflags & CF_LAST_IO)
         gen_io_end();
 done_generating:

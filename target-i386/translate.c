@@ -84,8 +84,8 @@ target_ulong shadow_pop(void) {
     }
 	target_ulong tmp;
     tmp = shdw.stk[shdw.top];
-    shdw.stk[shdw.top] = 0;
-    shdw.top = shdw.top - 1;
+    //shdw.stk[shdw.top] = 0;
+    //shdw.top = shdw.top - 1;
     return tmp;
 }
 

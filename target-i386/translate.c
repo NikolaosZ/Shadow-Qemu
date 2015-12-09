@@ -69,6 +69,7 @@ SHADOW_t shdw = { {0}, -1};
 uint8_t shadow_pop_flag = 0;
 void shadow_push(target_ulong value);
 target_ulong shadow_pop(void);
+target_ulong shadow_is_member(SHADOW_t *stack, target_ulong addr); 
 
 void shadow_push(target_ulong value) {
     if (shdw.top == 1023){
@@ -84,9 +85,23 @@ target_ulong shadow_pop(void) {
     }
 	target_ulong tmp;
     tmp = shdw.stk[shdw.top];
-    //shdw.stk[shdw.top] = 0;
-    //shdw.top = shdw.top - 1;
+    shdw.stk[shdw.top] = 0;
+    shdw.top = shdw.top - 1;
     return tmp;
+}
+
+target_ulong shadow_is_member(SHADOW_t *stack, target_ulong addr){
+    int index = 0;
+    target_ulong found = 0;
+
+    for (index = 0; index <= stack->top; index++) {
+        if (addr == stack->stk[index]) {
+            found = 1;
+            return found;
+        }
+    }
+
+    return 0;
 }
 
 //////////////////////////////////////////////////////////////////////////////////
@@ -8027,18 +8042,15 @@ void gen_intermediate_code(CPUX86State *env, TranslationBlock *tb)
 		
 		///////Something something "oh no im being hacked?"/////
 		if(shadow_pop_flag){
-			uint8_t danger_flag = 1;
-			int i;
-			for(i = 0; i <= shdw.top; i++){
-				if(shdw.stk[i] == pc_ptr){
-					shadow_pop();
-					danger_flag = 0;
-				}
-			}
-			if(danger_flag){
+			uint8_t danger_flag = 0;
+			
+			danger_flag = shadow_is_member(&shdw, pc_ptr);
+			
+			if (!danger_flag) {
 				printf("Something, something Oh no im being hacked!\n");
 				exit(0);
 			}
+			
 			shadow_pop_flag = 0;
 		}
 		///////////////////////////////////////////////////////
